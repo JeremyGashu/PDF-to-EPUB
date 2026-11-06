@@ -1,0 +1,8 @@
+.git
+tests
+data
+*.pdf
+*.epub
+__pycache__
+*.pyc
+README.md

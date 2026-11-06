@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF to EPUB</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --text: #1d1d1f; --muted: #6b6b70; --line: #e3e1dc;
+    --accent: #2f6f5e; --accent-soft: #e4efeb; --danger: #b3261e; --danger-soft: #fbe9e7; --warn: #8a5a00;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141416; --panel: #1d1d20; --text: #ececee; --muted: #9a9aa2; --line: #2e2e33;
+      --accent: #6cc4a8; --accent-soft: #1f3530; --danger: #ff8a80; --danger-soft: #3a2220; --warn: #e3b55b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 16px 80px; }
+  header h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header p { margin: 0 0 28px; color: var(--muted); }
+  .drop { border: 2px dashed var(--line); border-radius: var(--radius); background: var(--panel); padding: 44px 20px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop strong { display: block; font-size: 17px; margin-bottom: 4px; }
+  .drop span { color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-top: 18px; }
+  details > summary { cursor: pointer; padding: 14px 18px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::after { content: "Show"; color: var(--muted); font-weight: 400; }
+  details[open] > summary::after { content: "Hide"; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; padding: 4px 18px 18px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  label.f { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+  label.f .hint { font-size: 12px; }
+  input[type=text], input[type=password], select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { font: inherit; border: 0; background: transparent; color: var(--text); padding: 7px 12px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { .seg button.on { color: #10201b; } }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 13px; cursor: pointer; user-select: none; color: var(--text); }
+  .chip.on { background: var(--accent-soft); border-color: var(--accent); }
+  .toggle { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; cursor: pointer; }
+  .jobs { margin-top: 24px; display: flex; flex-direction: column; gap: 12px; }
+  .job { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .job .top { display: flex; align-items: center; gap: 12px; }
+  .job .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+  .pill.done { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+  .pill.error { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+  .bar { height: 6px; background: var(--bg); border-radius: 99px; margin: 10px 0 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .msg { font-size: 13px; color: var(--muted); }
+  .msg.err { color: var(--danger); }
+  .stats { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .warn { font-size: 13px; color: var(--warn); margin-top: 4px; }
+  .btn { font: inherit; font-size: 14px; border-radius: 8px; padding: 7px 14px; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--text); text-decoration: none; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { .btn.primary { color: #10201b; } }
+  .icon { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 4px; }
+  .banner { margin-top: 14px; font-size: 13px; color: var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>PDF → EPUB</h1>
+    <p>Reflowable e-books with chapters, a table of contents, images, tables and page numbers. Scanned pages are read with OCR. Everything stays on this machine.</p>
+  </header>
+
+  <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose PDF files">
+    <strong>Drop PDFs here</strong>
+    <span>or click to choose files</span>
+    <input type="file" id="file" accept="application/pdf,.pdf" multiple hidden>
+  </div>
+  <div class="banner" id="banner" hidden></div>
+
+  <details class="panel" id="opts">
+    <summary>Options</summary>
+    <div class="grid">
+      <label class="f">Title <input type="text" id="title" placeholder="From the PDF"><span class="hint">Overrides the title (applies to the next upload)</span></label>
+      <label class="f">Author <input type="text" id="author" placeholder="From the PDF"></label>
+      <label class="f">Book language
+        <select id="language">
+          <option value="en">English</option><option value="de">German</option><option value="fr">French</option>
+          <option value="es">Spanish</option><option value="it">Italian</option><option value="pt">Portuguese</option>
+          <option value="nl">Dutch</option><option value="sv">Swedish</option><option value="pl">Polish</option>
+          <option value="ru">Russian</option><option value="ja">Japanese</option><option value="zh">Chinese</option>
+          <option value="ko">Korean</option><option value="ar">Arabic</option>
+        </select>
+      </label>
+      <label class="f">Password <input type="password" id="password" placeholder="Only for locked PDFs" autocomplete="off"></label>
+      <div class="f"><label class="f">Layout</label>
+        <div class="seg" data-key="layout"><button data-v="reflow">Reflowable</button><button data-v="fixed">Page images</button></div>
+        <span class="hint msg">Page images keep the exact look (comics, magazines) but don't reflow.</span>
+      </div>
+      <div class="f"><label class="f">OCR</label>
+        <div class="seg" data-key="ocr_mode"><button data-v="auto">Auto</button><button data-v="force">Every page</button><button data-v="off">Off</button></div>
+        <span class="hint msg">Auto reads only pages without a usable text layer.</span>
+      </div>
+      <div class="f" style="grid-column: 1 / -1"><label class="f">OCR languages</label>
+        <div class="checks" id="langs"></div>
+      </div>
+      <div class="f"><label class="f">Tables</label>
+        <div class="seg" data-key="tables"><button data-v="html">Real tables</button><button data-v="image">Images</button></div>
+      </div>
+      <div class="f" style="gap:10px">
+        <label class="toggle"><input type="checkbox" id="cover" checked> Use first page as cover</label>
+        <label class="toggle"><input type="checkbox" id="keep_headers"> Keep running headers / page numbers</label>
+      </div>
+    </div>
+  </details>
+
+  <section class="jobs" id="jobs" aria-live="polite"></section>
+</main>
+
+<script>
+const LANG_NAMES = { eng: "English", deu: "German", fra: "French", spa: "Spanish", ita: "Italian", por: "Portuguese", nld: "Dutch",
+  swe: "Swedish", pol: "Polish", rus: "Russian", jpn: "Japanese", chi_sim: "Chinese (Simpl.)", chi_tra: "Chinese (Trad.)", kor: "Korean", ara: "Arabic" };
+const state = { layout: "reflow", ocr_mode: "auto", tables: "html", ocr_langs: ["eng"] };
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem("pdf2epub") || "{}"); } catch { return {}; } },
+  set(v) { try { localStorage.setItem("pdf2epub", JSON.stringify(v)); } catch {} },
+};
+Object.assign(state, store.get().opts || {});
+const $ = (id) => document.getElementById(id);
+["language", "cover", "keep_headers"].forEach((k) => {
+  const el = $(k); const saved = store.get()[k];
+  if (saved !== undefined) el.type === "checkbox" ? (el.checked = saved) : (el.value = saved);
+  el.addEventListener("change", save);
+});
+function save() {
+  store.set({ opts: state, language: $("language").value, cover: $("cover").checked, keep_headers: $("keep_headers").checked });
+}
+document.querySelectorAll(".seg").forEach((seg) => {
+  const key = seg.dataset.key;
+  const paint = () => seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.v === state[key]));
+  seg.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; state[key] = b.dataset.v; paint(); save(); });
+  paint();
+});
+
+fetch("/api/info").then((r) => r.json()).then((info) => {
+  const box = $("langs");
+  if (!info.ocr) { $("banner").hidden = false; $("banner").textContent = "OCR engine not found: scanned pages will be converted without text."; }
+  state.ocr_langs = state.ocr_langs.filter((l) => info.ocr_languages.includes(l));
+  if (!state.ocr_langs.length && info.ocr_languages.includes("eng")) state.ocr_langs = ["eng"];
+  info.ocr_languages.forEach((code) => {
+    const c = document.createElement("span");
+    c.className = "chip"; c.textContent = LANG_NAMES[code] || code; c.title = code;
+    const paint = () => c.classList.toggle("on", state.ocr_langs.includes(code));
+    c.onclick = () => {
+      state.ocr_langs = state.ocr_langs.includes(code) ? state.ocr_langs.filter((x) => x !== code) : [...state.ocr_langs, code];
+      if (!state.ocr_langs.length) state.ocr_langs = [code];
+      box.querySelectorAll(".chip").forEach((x) => x.classList.toggle("on", state.ocr_langs.includes(x.title)));
+      save();
+    };
+    paint(); box.appendChild(c);
+  });
+});
+
+const drop = $("drop"), input = $("file");
+drop.onclick = () => input.click();
+drop.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } };
+input.onchange = () => { [...input.files].forEach(upload); input.value = ""; };
+["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => [...e.dataTransfer.files].forEach(upload));
+
+function card(name) {
+  const el = document.createElement("div");
+  el.className = "job";
+  el.innerHTML = `<div class="top"><div class="name"></div><span class="pill">Uploading</span><button class="icon" title="Remove" aria-label="Remove">×</button></div>
+    <div class="bar"><i></i></div><div class="msg"></div><div class="stats"></div><div class="extra"></div>`;
+  el.querySelector(".name").textContent = name;
+  $("jobs").prepend(el);
+  return el;
+}
+
+function upload(file) {
+  if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") return;
+  const el = card(file.name);
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("title", $("title").value); fd.append("author", $("author").value);
+  fd.append("language", $("language").value); fd.append("password", $("password").value);
+  fd.append("ocr_mode", state.ocr_mode); fd.append("ocr_languages", state.ocr_langs.join("+") || "eng");
+  fd.append("layout", state.layout); fd.append("tables", state.tables);
+  fd.append("cover", $("cover").checked); fd.append("keep_headers", $("keep_headers").checked);
+  $("title").value = ""; $("author").value = "";
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/jobs");
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) render(el, { status: "uploading", progress: e.loaded / e.total * 0.02, message: `Uploading ${Math.round(e.loaded / e.total * 100)}%` }); };
+  xhr.onload = () => {
+    let data = {}; try { data = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status !== 200) return render(el, { status: "error", error: data.detail || `Upload failed (${xhr.status})` });
+    el.querySelector(".icon").onclick = () => { fetch(`/api/jobs/${data.id}`, { method: "DELETE" }); el.remove(); el.dead = true; };
+    poll(el, data.id);
+  };
+  xhr.onerror = () => render(el, { status: "error", error: "Upload failed" });
+  el.querySelector(".icon").onclick = () => { xhr.abort(); el.remove(); };
+  xhr.send(fd);
+}
+
+function poll(el, id) {
+  if (el.dead) return;
+  fetch(`/api/jobs/${id}`).then((r) => r.ok ? r.json() : Promise.reject(r.status)).then((j) => {
+    render(el, j);
+    if (j.status === "queued" || j.status === "running") setTimeout(() => poll(el, id), 700);
+  }).catch(() => render(el, { status: "error", error: "Lost track of this job (server restarted?)" }));
+}
+
+function render(el, j) {
+  const pill = el.querySelector(".pill");
+  const labels = { uploading: "Uploading", queued: "Queued", running: "Converting", done: "Ready", error: "Failed" };
+  pill.textContent = labels[j.status] || j.status;
+  pill.className = "pill " + (j.status === "done" ? "done" : j.status === "error" ? "error" : "");
+  el.querySelector(".bar i").style.width = `${Math.round((j.status === "done" ? 1 : j.progress || 0) * 100)}%`;
+  const msg = el.querySelector(".msg");
+  msg.className = "msg" + (j.status === "error" ? " err" : "");
+  msg.textContent = j.status === "error" ? j.error : j.message || "";
+  const extra = el.querySelector(".extra");
+  if (j.status === "done" && !extra.dataset.done) {
+    extra.dataset.done = 1;
+    el.querySelector(".bar").hidden = true;
+    const r = j.result || {};
+    el.querySelector(".stats").textContent =
+      `“${r.title}” · ${r.pages} pages → ${r.chapters} chapter${r.chapters === 1 ? "" : "s"} · ${r.images} images · ${r.tables} tables` +
+      (r.ocr_pages ? ` · ${r.ocr_pages} pages OCR'd` : "");
+    (r.warnings || []).forEach((w) => { const d = document.createElement("div"); d.className = "warn"; d.textContent = "⚠ " + w; extra.appendChild(d); });
+    const a = document.createElement("a");
+    a.className = "btn primary"; a.href = `/api/jobs/${j.id}/download`; a.textContent = `Download ${j.out_name}`;
+    a.style.cssText = "display:inline-block;margin-top:10px";
+    extra.appendChild(a);
+    msg.textContent = "";
+  }
+}
+</script>
+</body>
+</html>

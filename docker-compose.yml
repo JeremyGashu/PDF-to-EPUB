@@ -1,0 +1,21 @@
+services:
+  pdf2epub:
+    build:
+      context: .
+      args:
+        # Tesseract OCR languages baked into the image (space separated).
+        OCR_LANGS: ${OCR_LANGS:-eng deu fra spa ita por nld}
+    image: pdf2epub:latest
+    container_name: pdf2epub
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8000"
+    environment:
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
+      JOB_TTL_HOURS: ${JOB_TTL_HOURS:-24}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+    volumes:
+      - pdf2epub-data:/data
+    restart: unless-stopped
+
+volumes:
+  pdf2epub-data:
