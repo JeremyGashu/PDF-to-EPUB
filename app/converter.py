@@ -14,6 +14,7 @@ Pipeline
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import html
 import logging
@@ -84,6 +85,17 @@ NUMBER_RE = re.compile(r"^\s*\(?(\d{1,3}|[a-z]|[ivx]{1,5})[.)]\s+(?=\S)")
 CAPTION_RE = re.compile(r"^\s*(fig(ure)?|image|photo|chart|diagram|plate|illustration|exhibit|table|graph|map|listing)\.?\s*[\dIVXivx]+", re.I)
 PAGE_NUM_RE = re.compile(r"^[\s\-–—|•]*(page\s*)?(\d{1,4}|[ivxlcdm]{1,7})(\s*(of|/)\s*\d+)?[\s\-–—|•]*$", re.I)
 TERMINAL = tuple('.!?:;"”’)]…»')
+# OCR'd dot leaders ("BASELINE....wweccsssssss", "—— eee"): a tail with a letter tripled
+OCR_LEADER_RE = re.compile(r"(?:^|\.{2,}|\s)[\s—–_~\-.,:;·…'‘’»]*(?:[a-z.,:;·…'‘’»\-]{1,3}\s+)?[a-z.,:;·…'‘’»\-]*([wecsv])\1\1[a-z.,:;·…'‘’»\-\s]*?(\d{1,4})?\s*$")
+
+
+def strip_leaders(text: str) -> str:
+    """Remove OCR'd dot-leader garbage, keeping a trailing page number."""
+    m = OCR_LEADER_RE.search(text)
+    if not m:
+        return text
+    return text[: m.start()].rstrip() + (f" {m.group(2)}" if m.group(2) else "")
+CONTENTS_RE = re.compile(r"^\s*(table of )?contents\s*$", re.I)
 CJK_RE = re.compile(r"[　-〿぀-ヿ㐀-䶿一-鿿가-힯＀-￯]")
 
 
@@ -477,6 +489,20 @@ class Converter:
             scanned = big >= 0.85 and (ocr_page or not lines or self.invisible_ratio(page) > 0.5)
             for l in lines:
                 l.ocr = scanned
+                if scanned:
+                    m = OCR_LEADER_RE.search(l.text)
+                    if m:
+                        cut = len(l.text) - m.start()
+                        keep = f" {m.group(2)}" if m.group(2) else ""  # a contents page's page number
+                        l.text = l.text[: m.start()] + keep
+                        for sp in reversed(l.spans):  # trim the same number of characters off the spans
+                            take = min(cut, len(sp.text))
+                            sp.text, cut = sp.text[: len(sp.text) - take], cut - take
+                            if cut <= 0:
+                                break
+                        if keep and l.spans:
+                            l.spans[-1].text += keep
+            lines = [l for l in lines if l.text.strip()]
             self.lines.append(lines)
             self.image_infos.append(infos)
             self.scanned.append(scanned)
@@ -521,23 +547,114 @@ class Converter:
                     gaps.append(b.bbox.y0 - a.bbox.y1)
         self.line_gap = statistics.median(gaps) if gaps else self.body * 0.25
 
+    @staticmethod
+    def hf_key(text: str) -> tuple[str, bool]:
+        """Running header/footer identity, robust to page numbers and OCR noise.
+
+        Page-number tokens (digits, roman numerals and their OCR misreads such as "VIT" or "1X")
+        are stripped from both ends; the key is the remaining words with 3+ letters, letters only,
+        so "XII | THE BEHAVIOR OPS MANUAL", "824 | THE BEHAVIOR OPS MANUAL" and "| THE BEHAVIOR OPS
+        MANUAL" match, as do "S-11: RESOURCES" and "$-11; RESOURCES". Returns (key, had_page_number).
+        """
+        toks = [t for t in re.split(r"[\s|\[\]•·]+", text.strip()) if t]
+        num = re.compile(r"^(page|p\.)?[\divxlcdmtIVXLCDMT]{1,6}$")
+        had = False
+        while toks and num.match(toks[0]) and (any(c.isdigit() for c in toks[0]) or toks[0].isupper() or len(toks) == 1):
+            toks.pop(0)
+            had = True
+        while toks and num.match(toks[-1]) and (any(c.isdigit() for c in toks[-1]) or toks[-1].isupper() or len(toks) == 1):
+            toks.pop()
+            had = True
+        words = [re.sub(r"[^a-z]", "", t.lower()) for t in toks]
+        return "".join(w for w in words if len(w) >= 3), had
+
     def _remove_headers_footers(self) -> None:
+        """Remove running headers/footers and page numbers.
+
+        Candidates are the top-most and bottom-most lines of each page (wherever the margins are,
+        which varies between scans), not a fixed zone. A candidate goes if its text repeats on
+        several pages, or if it is a bare page number with nothing else on its row.
+        """
         if self.opts.keep_headers:
             return
         n = self.doc.page_count
-        keys: dict[tuple, set[int]] = defaultdict(set)
-        zone_lines = []
+        pages_of: dict[tuple, set[int]] = defaultdict(set)
+        cands: list[tuple[str, Line, str, bool]] = []
         for pno, lines in enumerate(self.lines):
+            if not lines:
+                continue
             ph = self.doc[pno].rect.height
+            h = statistics.median(l.h for l in lines)
+            top = min(l.bbox.y0 for l in lines)
+            bot = max(l.bbox.y1 for l in lines)
             for l in lines:
-                zone = "top" if l.bbox.y1 <= ph * 0.09 else "bot" if l.bbox.y0 >= ph * 0.91 else None
-                if zone is None or l.size > (self.ocr_body if l.ocr else self.body) * 1.15:
+                if l.size > (self.ocr_body if l.ocr else self.body) * 1.15:
                     continue
-                key = (zone, re.sub(r"\d+", "#", norm_key(l.text)) or l.text.strip())
-                keys[key].add(pno)
-                zone_lines.append((key, l))
-        for key, l in zone_lines:
-            if PAGE_NUM_RE.match(l.text) or (n >= 3 and len(keys[key]) >= 3):
+                if l.bbox.y0 <= top + 1.5 * h and l.bbox.y1 < ph * 0.25:
+                    zone = "top"
+                elif l.bbox.y1 >= bot - 1.5 * h and l.bbox.y0 > ph * 0.7:
+                    zone = "bot"
+                else:
+                    continue
+                key, had_num = self.hf_key(l.text)
+                if key:
+                    pages_of[(zone, key)].add(pno)
+                cands.append((zone, l, key, had_num))
+        if n < 3:
+            # too short to see repetition: only bare page numbers in the outer margins
+            for zone, l, key, _ in cands:
+                ph = self.doc[l.page].rect.height
+                if not key and PAGE_NUM_RE.match(l.text) and (l.bbox.y1 < ph * 0.1 or l.bbox.y0 > ph * 0.9):
+                    l.removed = True
+            return
+        frequent = max(3, int(0.2 * n))
+        common = defaultdict(list)  # zone -> keys seen on 3+ pages
+        for (zone, key), ps in pages_of.items():
+            if len(ps) >= 3:
+                common[zone].append(key)
+        for zone, l, key, had_num in cands:
+            if not key:
+                continue
+            if len(pages_of[(zone, key)]) < 3:
+                # OCR typos ("MANUAI"): fold into a near-identical frequent key
+                near = difflib.get_close_matches(key, common[zone], n=1, cutoff=0.85)
+                if near:
+                    key = near[0]
+            reps = len(pages_of[(zone, key)])
+            ph = self.doc[l.page].rect.height
+            margin = l.bbox.y1 <= ph * 0.09
+            # top lines inside the page body that merely repeat (e.g. "Exercises") need more evidence
+            if reps >= 3 and (zone == "bot" or margin or had_num or reps >= frequent):
+                l.removed = True
+        def row_of(l: Line) -> list[Line]:
+            return [o for o in self.lines[l.page] if o is not l and
+                    min(o.bbox.y1, l.bbox.y1) - max(o.bbox.y0, l.bbox.y0) > 0.3 * l.h]
+
+        def fragment(l: Line) -> bool:  # no words of its own: "|", "S-11:", "124", "| XI"
+            return not self.hf_key(l.text)[0] and len(l.text.strip()) <= 10
+
+        # leftovers of a removed header/footer on the same row ("S-11:", "|", the page number)
+        for zone, l, key, _ in cands:
+            if l.removed or not fragment(l):
+                continue
+            row = row_of(l)
+            if any(o.removed for o in row) and all(o.removed or fragment(o) for o in row):
+                l.removed = True
+        # thumb-index tabs / margin numbers on the outer edge of the page ("07" in a black tab)
+        for lines in self.lines:
+            for l in lines:
+                pw = self.doc[l.page].rect.width
+                t = l.text.strip()
+                if not l.removed and len(t) <= 4 and re.fullmatch(r"[\dIVX]+", t) and \
+                        (l.bbox.x0 > pw * 0.9 or l.bbox.x1 < pw * 0.1):
+                    l.removed = True
+        # bare page numbers: only when nothing else that stays sits on the same row
+        for zone, l, key, _ in cands:
+            t = l.text.strip()
+            if key or l.removed or t.endswith(".") or not re.fullmatch(r"[\W\divxlcdmtIVXLCDMT]{1,10}", t) \
+                    or not any(c.isdigit() or c in "ivxlcdmIVXLCDM" for c in t):
+                continue
+            if all(o.removed or (fragment(o) and not any(ch.isalnum() for ch in o.text)) for o in row_of(l)):
                 l.removed = True
 
     # ------------------------------------------------------------------ classification
@@ -597,6 +714,8 @@ class Converter:
                     for ci, cell in enumerate(row.cells):
                         if cell is not None and ri < len(data) and ci < len(data[ri]) and data[ri][ci] is not None:
                             data[ri][ci] = self.text_in(chars, pymupdf.Rect(cell))
+                            if self.scanned[page.number]:
+                                data[ri][ci] = strip_leaders(data[ri][ci])
             except Exception as e:
                 log.debug("cell text rebuild failed: %s", e)
             filled = sum(1 for row in data for c in row if c and str(c).strip())
@@ -726,7 +845,7 @@ class Converter:
                     for rect, text in ws:
                         ci = max([k for k, x in enumerate(starts) if x <= rect.x0 + 5] or [0])
                         cells[ci] = (cells[ci] + " " + text).strip()
-                return cells
+                return [strip_leaders(c) for c in cells] if self.scanned[page.number] else cells
 
             # adjacent single-segment rows (often the header) that still spread over the columns
             first = rows.index(run[0])
@@ -1609,15 +1728,8 @@ class Converter:
                 return 'href="' + (skipped or "#") + '"' if pno == 0 and skip_first else "data-broken-link=\"\""
             return f'href="../{f}#pg{pno}"'
 
-        for ci, (href, ctitle, body) in enumerate(chapter_docs, 1):
-            body = re.sub(r'href="__PG_(\d+)__"', resolve, body)
-            body = body.replace("data-broken-link=\"\"", "")
-            content = xhtml(ctitle, body, self.opts.language)
-            book.add(Item(f"ch{ci:04d}", href, "application/xhtml+xml", content.encode()), spine=True)
         if not chapter_docs:
-            content = xhtml(title, "<p></p>", self.opts.language)
-            book.add(Item("ch0001", "text/ch0001.xhtml", "application/xhtml+xml", content.encode()), spine=True)
-            chapter_docs.append(("text/ch0001.xhtml", title, ""))
+            chapter_docs.append(("text/ch0001.xhtml", title, "<p></p>"))
 
         # navigation
         flat = []
@@ -1642,6 +1754,16 @@ class Converter:
                 if f and el.level in levels:
                     flat.append((el.level, el.text, f"{f}#{el.anchors[0]}"))
         book.toc = self.nest(flat) or [NavPoint(title, chapter_docs[0][0])]
+
+        # the book's printed contents pages become a clickable contents list built from the TOC
+        contents_href = next((h for h, t, _ in chapter_docs if CONTENTS_RE.match(t)), None)
+        for ci, (href, ctitle, body) in enumerate(chapter_docs, 1):
+            if href == contents_href and book.toc:
+                body = self.contents_page(body, book.toc, href)
+            body = re.sub(r'href="__PG_(\d+)__"', resolve, body)
+            body = body.replace("data-broken-link=\"\"", "")
+            content = xhtml(ctitle, body, self.opts.language)
+            book.add(Item(f"ch{ci:04d}", href, "application/xhtml+xml", content.encode()), spine=True)
         for pno in range(n):
             f = id_file.get(f"pg{pno}")
             if f:
@@ -1651,6 +1773,33 @@ class Converter:
         for it in self.images.values():
             book.add(it)
         return book, len(chapter_docs), title
+
+    @staticmethod
+    def contents_page(body: str, toc: list[NavPoint], own_href: str) -> str:
+        """Replace printed contents pages (titles + page numbers) with links into the book.
+
+        Keeps the heading and every id of the old pages (page markers, anchors) so that
+        the page list and other links that point here still resolve.
+        """
+        head = re.search(r"<h\d[^>]*>.*?</h\d>", body, re.S)
+        heading = head.group(0) if head else '<h1>Contents</h1>'
+        markers = re.findall(r'<span epub:type="pagebreak"[^>]*></span>', body)
+        kept = set(re.findall(r'\bid="([^"]+)"', heading + "".join(markers)))
+        others = [i for i in re.findall(r'\bid="([^"]+)"', body) if i not in kept]
+
+        def items(points: list[NavPoint]) -> str:
+            out = []
+            for pt in points:
+                if pt.href.split("#")[0] == own_href and not pt.children:
+                    continue  # the contents entry itself
+                link = esc(pt.href[len("text/"):] if pt.href.startswith("text/") else "../" + pt.href)
+                sub = f"<ol>{items(pt.children)}</ol>" if pt.children else ""
+                out.append(f'<li><a href="{link}">{esc(pt.title)}</a>{sub}</li>')
+            return "".join(out)
+
+        return (markers[0] if markers else "") + heading + "".join(markers[1:]) + \
+            "".join(f'<span id="{i}"></span>' for i in others) + \
+            f'\n<nav class="contents" role="doc-toc" aria-label="Contents"><ol>{items(toc)}</ol></nav>'
 
     def title_from_name(self) -> str:
         stem = Path(self.opts.source_name or self.pdf_path).stem
